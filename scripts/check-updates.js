@@ -113,6 +113,9 @@ function collectStatus(packages) {
         if (probe.path) {
           info.binaryPath = probe.path;
         }
+        if (probe.error) {
+          info.note = probe.error;
+        }
       }
     }
 
@@ -130,7 +133,11 @@ function collectStatus(packages) {
     if (info.error) {
       info.status = 'error';
     } else if (!info.installed) {
-      info.status = info.latest ? 'not_installed' : 'unknown';
+      if (pkg === CLAUDE_PACKAGE && info.via === 'claude-cli') {
+        info.status = 'unknown';
+      } else {
+        info.status = info.latest ? 'not_installed' : 'unknown';
+      }
     } else if (!info.latest) {
       info.status = 'unknown';
     } else if (info.installed === info.latest) {
