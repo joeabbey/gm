@@ -1,54 +1,57 @@
 #!/usr/bin/env node
+'use strict';
+
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { spawnSync } = require('child_process');
 
+const {
+  loadPackages,
+  loadPackagesForEditing,
+  writePackages,
+  getConfigPath
+} = require('../lib/config');
+const { runDoctor } = require('../lib/doctor');
+const { readStatus, summarizeStatus } = require('../lib/status');
+const { CLAUDE_PACKAGE, probeClaudeBinary } = require('../lib/claude');
+const { version } = require('../package.json');
+
 const ROOT = path.resolve(__dirname, '..');
 const CHECK_SCRIPT = path.join(ROOT, 'scripts', 'check-updates.js');
 const RENDER_SCRIPT = path.join(ROOT, 'scripts', 'render-message.js');
 const DEFAULT_CACHE = path.join(os.homedir(), '.cache', 'gm', 'status.json');
-const DEFAULT_CONFIG = path.join(os.homedir(), '.config', 'gm', 'packages.json');
-const FALLBACK_CONFIG = path.join(ROOT, 'config', 'packages.json');
 
 function parseArgs(argv) {
   const args = argv.slice(2);
   return args;
 }
 
-function normalizePackageList(list) {
-  if (!Array.isArray(list)) {
-    return [];
-  }
-  const seen = new Set();
-  const normalized = [];
-  for (const entry of list) {
-    if (typeof entry !== 'string') {
-      continue;
-    }
-    const trimmed = entry.trim();
-    if (!trimmed || seen.has(trimmed)) {
-      continue;
-    }
-    seen.add(trimmed);
-    normalized.push(trimmed);
-  }
-  return normalized;
-}
-
 function usage() {
   const text = `gm — Good morning ☕
 
 Usage:
-  gm prompt init [shell]       Print shell snippet to enable prompt integration (bash|zsh|fish)
-  gm prompt tick [--quiet]     Refresh cache (respecting TTL) and emit pending notices
-  gm prompt tick --force       Force refresh regardless of cache age
-  gm check                     Run update check now (always hits npm)
-  gm render [--verbose]        Print current status from cache
+  gm [command]
+
+Core workflow:
+  gm status [options]          Human-friendly status report (default command)
   gm update                    Install/upgrade tracked npm globals
-  gm packages                  List tracked packages
-  gm packages add <name...>    Add packages to tracking set
-  gm packages remove <name...> Remove packages from tracking set
+  gm packages [list]           Print the tracked package list
+
+Prompt integration:
+  gm prompt init [shell]       Print shell snippet to enable prompt integration (bash|zsh|fish)
+  gm prompt tick [--quiet]     Refresh cache respecting the TTL and emit notices
+  gm prompt tick --force       Force a refresh regardless of cache age
+
+Package management:
+  gm packages add <name...>    Add packages to the tracking set
+  gm packages remove <name...> Remove packages from the tracking set
+
+Diagnostics & utilities:
+  gm doctor                    Diagnose environment issues
+  gm check                     Run the update check immediately (always hits npm)
+  gm render [--verbose]        Print the cached status payload
+  gm --version | version       Print the current gm version
   gm help                      Show this message
 `;
   process.stdout.write(text);
@@ -74,68 +77,15 @@ function promptSnippet(shell) {
   return `# >>> gm initialize >>>\nif [ -f "${promptDir}/prompt.sh" ]; then\n  GM_ROOT="\${GM_ROOT:-${ROOT}}"\n  . "${promptDir}/prompt.sh"\nfi\n# <<< gm initialize <<<`;
 }
 
-function loadPackages() {
-  const fromEnv = (process.env.GM_CONFIG && process.env.GM_CONFIG.trim()) || '';
-  const candidates = [];
-  if (fromEnv) {
-    candidates.push(fromEnv);
+function formatTimestamp(isoString) {
+  if (!isoString) {
+    return 'unknown';
   }
-  candidates.push(DEFAULT_CONFIG);
-  candidates.push(FALLBACK_CONFIG);
-  for (const candidate of candidates) {
-    try {
-      if (!fs.existsSync(candidate)) {
-        continue;
-      }
-      const raw = fs.readFileSync(candidate, 'utf8');
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        return normalizePackageList(parsed);
-      }
-    } catch (error) {
-      // ignore and continue
-    }
+  const parsed = new Date(isoString);
+  if (Number.isNaN(parsed.getTime())) {
+    return 'unknown';
   }
-  return [];
-}
-
-function resolvePackagesConfigPath() {
-  const fromEnv = (process.env.GM_CONFIG && process.env.GM_CONFIG.trim()) || '';
-  if (fromEnv) {
-    return fromEnv;
-  }
-  return DEFAULT_CONFIG;
-}
-
-function readPackagesFile(filePath) {
-  const raw = fs.readFileSync(filePath, 'utf8');
-  const parsed = JSON.parse(raw);
-  if (!Array.isArray(parsed)) {
-    throw new Error('packages file must contain a JSON array');
-  }
-  return normalizePackageList(parsed);
-}
-
-function loadPackagesForEditing() {
-  const configPath = resolvePackagesConfigPath();
-  if (fs.existsSync(configPath)) {
-    try {
-      const packages = readPackagesFile(configPath);
-      return { packages, configPath };
-    } catch (error) {
-      console.error(`gm: failed to read ${configPath}: ${error.message}`);
-      process.exitCode = 1;
-      return null;
-    }
-  }
-  return { packages: [...loadPackages()], configPath };
-}
-
-function writePackagesFile(configPath, packages) {
-  const sanitized = normalizePackageList(packages);
-  const dir = path.dirname(configPath);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(configPath, `${JSON.stringify(sanitized, null, 2)}\n`, 'utf8');
+  return parsed.toLocaleString();
 }
 
 function runNodeScript(scriptPath, args = [], { quiet = false } = {}) {
@@ -239,6 +189,125 @@ function promptTick(args) {
   }
 }
 
+function gmStatus(args) {
+  const wantsHelp = args.some((arg) => arg === '--help' || arg === '-h');
+  if (wantsHelp) {
+    console.log('Usage: gm status [--refresh] [--json] [--verbose]');
+    console.log('  --refresh, -r  Force a fresh check before reporting');
+    console.log('  --json         Emit raw JSON with summary details');
+    console.log('  --verbose      Include missing packages when fully up to date');
+    return;
+  }
+  const force = args.some((arg) => arg === '--refresh' || arg === '-r');
+  const asJson = args.includes('--json');
+  const verbose = args.includes('--verbose');
+  ensureStatus({ force });
+  const cachePath = getCachePath();
+  const status = readStatus(cachePath);
+  const summary = summarizeStatus(status);
+
+  if (asJson) {
+    const payload = {
+      cachePath,
+      generatedAt: status && status.generatedAt ? status.generatedAt : null,
+      packages: status && Array.isArray(status.packages) ? status.packages : [],
+      summary: {
+        updates: summary.updates.map((pkg) => pkg.name),
+        missing: summary.missing.map((pkg) => pkg.name),
+        errors: summary.errors.map((pkg) => ({ name: pkg.name, error: pkg.error || 'lookup failed' }))
+      }
+    };
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+    return;
+  }
+
+  console.log(`Cache: ${cachePath}`);
+  console.log(`Last refresh: ${formatTimestamp(status && status.generatedAt)}`);
+  const trackedCount = status && Array.isArray(status.packages)
+    ? status.packages.length
+    : loadPackages().length;
+  console.log(`Tracked packages: ${trackedCount}`);
+
+  if (!status) {
+    console.log('Status: cache not generated yet. Run `gm check` to create it.');
+    return;
+  }
+
+  if (summary.updates.length) {
+    const formatted = summary.updates
+      .map((pkg) => {
+        const current = pkg.installed || 'none';
+        const latest = pkg.latest || 'unknown';
+        const viaNote = pkg.via === 'claude-cli' ? ' (via claude CLI)' : '';
+        return `  - ${pkg.name}${viaNote} ${current} → ${latest}`;
+      })
+      .join('\n');
+    console.log('Updates available:');
+    console.log(formatted);
+  } else {
+    console.log('Updates available: none');
+  }
+
+  if (summary.errors.length) {
+    const formatted = summary.errors
+      .map((pkg) => {
+        const viaNote = pkg.via === 'claude-cli' ? ' (via claude CLI)' : '';
+        return `  - ${pkg.name}${viaNote}: ${pkg.error || 'lookup failed'}`;
+      })
+      .join('\n');
+    console.log('Lookup issues:');
+    console.log(formatted);
+  } else {
+    console.log('Lookup issues: none');
+  }
+
+  if (summary.missing.length) {
+    const label = summary.updates.length || summary.errors.length || verbose
+      ? 'Missing packages:'
+      : 'Missing packages (install with `gm update`):';
+    const formatted = summary.missing
+      .map((pkg) => {
+        const viaNote = pkg.via === 'claude-cli' ? ' (via claude CLI)' : '';
+        return `  - ${pkg.name}${viaNote}`;
+      })
+      .join('\n');
+    console.log(label);
+    console.log(formatted);
+  } else if (verbose) {
+    console.log('Missing packages: none');
+  }
+
+  if (!summary.updates.length && !summary.errors.length && !summary.missing.length) {
+    console.log('All packages are up to date.');
+  }
+}
+
+function gmDoctor() {
+  console.log('gm doctor report');
+  const cachePath = getCachePath();
+  const configPath = getConfigPath();
+  const checks = runDoctor({ cachePath, configPath });
+  const symbols = {
+    ok: '[ok]',
+    warn: '[warn]',
+    error: '[error]',
+    info: '[info]'
+  };
+  let hasError = false;
+  checks.forEach((check) => {
+    const prefix = symbols[check.status] || '[info]';
+    console.log(`${prefix} ${check.name}: ${check.detail}`);
+    if (check.status === 'error') {
+      hasError = true;
+    }
+  });
+  console.log(`Cache path: ${cachePath}`);
+  console.log(`Config path: ${configPath}`);
+  if (hasError) {
+    process.exitCode = 1;
+  }
+}
+
 function gmCheck() {
   const result = runNodeScript(CHECK_SCRIPT);
   if (result.error) {
@@ -262,12 +331,44 @@ function gmUpdate() {
     process.exitCode = 1;
     return;
   }
-  const args = ['install', '-g', ...packages.map((pkg) => (pkg.includes('@') ? pkg : `${pkg}@latest`))];
-  const result = spawnSync('npm', args, { stdio: 'inherit' });
-  if (result.error) {
-    throw result.error;
+  const claudeProbe = probeClaudeBinary();
+  const npmPackages = [];
+  let invokedClaude = false;
+
+  packages.forEach((pkg) => {
+    if (pkg === CLAUDE_PACKAGE && claudeProbe && claudeProbe.found) {
+      invokedClaude = true;
+    } else {
+      npmPackages.push(pkg.includes('@') ? pkg : `${pkg}@latest`);
+    }
+  });
+
+  let npmStatus = 0;
+  if (npmPackages.length) {
+    const args = ['install', '-g', ...npmPackages];
+    const result = spawnSync('npm', args, { stdio: 'inherit' });
+    if (result.error) {
+      throw result.error;
+    }
+    npmStatus = result.status;
+    if (npmStatus !== 0) {
+      process.exitCode = npmStatus;
+      return;
+    }
   }
-  process.exitCode = result.status;
+
+  if (invokedClaude) {
+    const claudeResult = spawnSync('claude', ['update'], { stdio: 'inherit' });
+    if (claudeResult.error) {
+      throw claudeResult.error;
+    }
+    if (claudeResult.status !== 0) {
+      process.exitCode = claudeResult.status;
+      return;
+    }
+  }
+
+  process.exitCode = npmStatus;
 }
 
 function gmPackagesAdd(rawNames) {
@@ -291,8 +392,12 @@ function gmPackagesAdd(rawNames) {
     seen.add(name);
     parsedNames.push(name);
   }
-  const result = loadPackagesForEditing();
-  if (!result) {
+  let result;
+  try {
+    result = loadPackagesForEditing();
+  } catch (error) {
+    console.error(`gm: ${error.message}`);
+    process.exitCode = 1;
     return;
   }
   const { packages, configPath } = result;
@@ -311,11 +416,18 @@ function gmPackagesAdd(rawNames) {
     return;
   }
   try {
-    writePackagesFile(configPath, packages);
+    writePackages(configPath, packages);
     console.log(`gm: added ${added.join(', ')} (${configPath})`);
   } catch (error) {
     console.error(`gm: failed to write ${configPath}: ${error.message}`);
     process.exitCode = 1;
+    return;
+  }
+  if (process.env.GM_AUTO_REFRESH_ON_EDIT !== '0') {
+    const refresh = runNodeScript(CHECK_SCRIPT, [], { quiet: true });
+    if (refresh && refresh.status !== 0) {
+      console.error('gm: status refresh encountered an error.');
+    }
   }
 }
 
@@ -340,8 +452,12 @@ function gmPackagesRemove(rawNames) {
     target.add(name);
     parsedNames.push(name);
   }
-  const result = loadPackagesForEditing();
-  if (!result) {
+  let result;
+  try {
+    result = loadPackagesForEditing();
+  } catch (error) {
+    console.error(`gm: ${error.message}`);
+    process.exitCode = 1;
     return;
   }
   const { packages, configPath } = result;
@@ -359,11 +475,18 @@ function gmPackagesRemove(rawNames) {
     return;
   }
   try {
-    writePackagesFile(configPath, remaining);
+    writePackages(configPath, remaining);
     console.log(`gm: removed ${removed.join(', ')} (${configPath})`);
   } catch (error) {
     console.error(`gm: failed to write ${configPath}: ${error.message}`);
     process.exitCode = 1;
+    return;
+  }
+  if (process.env.GM_AUTO_REFRESH_ON_EDIT !== '0') {
+    const refresh = runNodeScript(CHECK_SCRIPT, [], { quiet: true });
+    if (refresh && refresh.status !== 0) {
+      console.error('gm: status refresh encountered an error.');
+    }
   }
 }
 
@@ -382,6 +505,11 @@ function gmPackages(args) {
     gmPackagesRemove(args.slice(1));
     return;
   }
+  if (sub === 'list' || sub === 'ls') {
+    const packages = loadPackages();
+    packages.forEach((pkg) => process.stdout.write(`${pkg}\n`));
+    return;
+  }
   console.error(`gm: unsupported packages subcommand "${sub || ''}".`);
   process.exitCode = 1;
 }
@@ -390,8 +518,18 @@ function main() {
   const args = parseArgs(process.argv);
   const command = args[0];
 
-  if (!command || command === 'help' || command === '--help' || command === '-h') {
+  if (!command) {
+    gmStatus([]);
+    return;
+  }
+
+  if (command === 'help' || command === '--help' || command === '-h') {
     usage();
+    return;
+  }
+
+  if (command === '--version' || command === '-v' || command === 'version') {
+    console.log(version);
     return;
   }
 
@@ -421,6 +559,11 @@ function main() {
     return;
   }
 
+  if (command === 'status') {
+    gmStatus(args.slice(1));
+    return;
+  }
+
   if (command === 'update') {
     gmUpdate();
     return;
@@ -428,6 +571,11 @@ function main() {
 
   if (command === 'packages') {
     gmPackages(args.slice(1));
+    return;
+  }
+
+  if (command === 'doctor') {
+    gmDoctor();
     return;
   }
 

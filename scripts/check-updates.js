@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { spawnSync } = require('child_process');
+const { CLAUDE_PACKAGE, probeClaudeBinary } = require('../lib/claude');
 
 const DEFAULT_CACHE_PATH = process.env.GM_CACHE || path.join(os.homedir(), '.cache', 'gm', 'status.json');
 const configCandidates = [];
@@ -78,13 +79,24 @@ function getLatestVersion(pkg) {
 
 function collectStatus(packages) {
   const installed = parseInstalledVersions();
+  let claudeProbe;
+
+  function getClaudeProbe() {
+    if (claudeProbe === undefined) {
+      claudeProbe = probeClaudeBinary();
+    }
+    return claudeProbe;
+  }
+
   const statuses = packages.map((pkg) => {
     const info = {
       name: pkg,
       installed: null,
       latest: null,
       status: 'unknown',
-      error: null
+      error: null,
+      via: null,
+      updateCommand: null
     };
 
     const installedEntry = installed[pkg];
@@ -92,11 +104,27 @@ function collectStatus(packages) {
       info.installed = installedEntry.version;
     }
 
+    if (pkg === CLAUDE_PACKAGE && !info.installed) {
+      const probe = getClaudeProbe();
+      if (probe && probe.found) {
+        info.installed = probe.version;
+        info.via = 'claude-cli';
+        info.updateCommand = 'claude update';
+        if (probe.path) {
+          info.binaryPath = probe.path;
+        }
+      }
+    }
+
     const latest = getLatestVersion(pkg);
     if (latest && typeof latest === 'object' && latest.error) {
       info.error = latest.error;
     } else {
       info.latest = latest;
+    }
+
+    if (pkg === CLAUDE_PACKAGE && info.via === 'claude-cli' && !info.updateCommand) {
+      info.updateCommand = 'claude update';
     }
 
     if (info.error) {

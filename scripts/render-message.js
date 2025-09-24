@@ -36,7 +36,8 @@ if (updates.length) {
   const formatted = updates.map((pkg) => {
     const current = pkg.installed || 'none';
     const latest = pkg.latest || 'unknown';
-    return `${pkg.name} ${current} → ${latest}`;
+    const via = pkg.via === 'claude-cli' ? ' (claude CLI)' : '';
+    return `${pkg.name}${via} ${current} → ${latest}`;
   }).join(', ');
   console.log(`[gm] updates available: ${formatted}`);
 }

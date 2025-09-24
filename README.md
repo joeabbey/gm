@@ -13,7 +13,7 @@ gm keeps a lightweight eye on global AI tooling updates. Hook it into your promp
    eval "$(gm prompt init zsh)"
    ```
 
-4. Open a new shell (or `source` your shell rc) and gm will print notices whenever tracked tools have updates.
+4. Open a new shell (or `source` your shell rc), then run `gm status --refresh` to generate the first cache and confirm everything is wired up.
 
 ### What you get
 
@@ -22,8 +22,18 @@ gm keeps a lightweight eye on global AI tooling updates. Hook it into your promp
 - Aliases defined by the prompt helper:
   - `gm-update` — runs `npm install -g` for every tracked package using the latest tag by default.
   - `gm-refresh` — forces an immediate status refresh (ignoring the cache TTL).
+- Native Claude CLI support — if the standalone `claude` binary is installed, gm reads its version via `claude --version` and upgrades it with `claude update` instead of `npm install -g @anthropic-ai/claude-code`.
 
 The scripts only rely on Node.js and work across macOS and Linux.
+
+## Everyday commands
+
+- `gm status` — friendly status panel; add `--refresh` to force a fresh check or `--json` for automation.
+- `gm update` — install the latest version of every tracked package (uses `claude update` when the native CLI is present).
+- `gm packages add <name>` / `gm packages remove <name>` — adjust the tracked list without editing JSON; append `--` spaced names for multiple packages.
+- `gm packages list` — print the current list; equivalent to `gm packages`.
+- `gm doctor` — sanity-check Node/npm availability, cache/config paths, and other prerequisites.
+- `gm` — with no arguments, this is shorthand for `gm status`.
 
 ## Configuration knobs
 
@@ -33,6 +43,7 @@ Set any of these environment variables before evaluating the snippet from `gm pr
 - `GM_CACHE` — path to the status cache (defaults to `~/.cache/gm/status.json`).
 - `GM_CONFIG` — path to a packages JSON file if you want to track additional global npm tools.
 - `GM_BIN` — override the gm executable used by the prompt helper (defaults to `"$GM_ROOT/bin/gm"`).
+- `GM_AUTO_REFRESH_ON_EDIT` — set to `0` to skip the automatic status refresh after `gm packages add/remove` (useful when offline).
 
 ### Tracking more packages
 
@@ -62,6 +73,8 @@ gm automatically picks up changes the next time it refreshes the cache.
 - `scripts/check-updates.js` resolves the currently installed global versions (via `npm ls -g`) and the latest published versions (via `npm view`). Results are cached as JSON and reused until the TTL expires.
 - `scripts/render-message.js` is invoked on each prompt to surface succinct notices when updates are pending. With `--verbose`, it can also list missing packages.
 - `bin/gm` glues everything together, exposes `gm prompt init`, and powers the helper aliases.
+- `lib/config.js`, `lib/status.js`, and `lib/doctor.js` provide focused helpers for package management, status summaries, and environment diagnostics.
+- `lib/claude.js` detects the native `claude` binary so gm can treat it as the authoritative install for `@anthropic-ai/claude-code`.
 
 Because the check script uses `npm view`, it requires network access the first time it runs after the TTL expires. Subsequent prompts stay fast and rely on the cached status file.
 
