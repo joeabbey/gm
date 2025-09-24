@@ -491,9 +491,48 @@ function gmPackagesRemove(rawNames) {
 }
 
 function gmPackages(args) {
-  if (!args.length) {
+  function printPackagesWithVersions() {
     const packages = loadPackages();
-    packages.forEach((pkg) => process.stdout.write(`${pkg}\n`));
+    if (!packages.length) {
+      return;
+    }
+    const status = readStatus(getCachePath());
+    const infoByName = new Map();
+    if (status && Array.isArray(status.packages)) {
+      status.packages.forEach((pkgInfo) => {
+        if (pkgInfo && typeof pkgInfo.name === 'string') {
+          infoByName.set(pkgInfo.name, pkgInfo);
+        }
+      });
+    }
+
+    const sorted = [...packages].sort((a, b) => a.localeCompare(b));
+    const maxNameLength = sorted.reduce((max, name) => Math.max(max, name.length), 0);
+
+    sorted.forEach((pkg) => {
+      const info = infoByName.get(pkg);
+      let versionText = 'unknown';
+      let note = '';
+
+      if (info) {
+        if (info.installed) {
+          versionText = info.installed;
+        } else if (info.via === 'claude-cli') {
+          versionText = info.error ? 'unknown' : '—';
+          note = info.error ? 'claude CLI — version unavailable' : 'claude CLI';
+        } else if (info.status === 'not_installed') {
+          versionText = 'not installed';
+        }
+      }
+
+      const paddedName = pkg.padEnd(maxNameLength);
+      const suffix = note ? `  ${note}` : '';
+      process.stdout.write(`${paddedName}  ${versionText}${suffix}\n`);
+    });
+  }
+
+  if (!args.length) {
+    printPackagesWithVersions();
     return;
   }
   const sub = args[0];
@@ -506,8 +545,7 @@ function gmPackages(args) {
     return;
   }
   if (sub === 'list' || sub === 'ls') {
-    const packages = loadPackages();
-    packages.forEach((pkg) => process.stdout.write(`${pkg}\n`));
+    printPackagesWithVersions();
     return;
   }
   console.error(`gm: unsupported packages subcommand "${sub || ''}".`);
