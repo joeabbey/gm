@@ -1,0 +1,438 @@
+#!/usr/bin/env node
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { spawnSync } = require('child_process');
+
+const ROOT = path.resolve(__dirname, '..');
+const CHECK_SCRIPT = path.join(ROOT, 'scripts', 'check-updates.js');
+const RENDER_SCRIPT = path.join(ROOT, 'scripts', 'render-message.js');
+const DEFAULT_CACHE = path.join(os.homedir(), '.cache', 'gm', 'status.json');
+const DEFAULT_CONFIG = path.join(os.homedir(), '.config', 'gm', 'packages.json');
+const FALLBACK_CONFIG = path.join(ROOT, 'config', 'packages.json');
+
+function parseArgs(argv) {
+  const args = argv.slice(2);
+  return args;
+}
+
+function normalizePackageList(list) {
+  if (!Array.isArray(list)) {
+    return [];
+  }
+  const seen = new Set();
+  const normalized = [];
+  for (const entry of list) {
+    if (typeof entry !== 'string') {
+      continue;
+    }
+    const trimmed = entry.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    normalized.push(trimmed);
+  }
+  return normalized;
+}
+
+function usage() {
+  const text = `gm — Good morning ☕
+
+Usage:
+  gm prompt init [shell]       Print shell snippet to enable prompt integration (bash|zsh|fish)
+  gm prompt tick [--quiet]     Refresh cache (respecting TTL) and emit pending notices
+  gm prompt tick --force       Force refresh regardless of cache age
+  gm check                     Run update check now (always hits npm)
+  gm render [--verbose]        Print current status from cache
+  gm update                    Install/upgrade tracked npm globals
+  gm packages                  List tracked packages
+  gm packages add <name...>    Add packages to tracking set
+  gm packages remove <name...> Remove packages from tracking set
+  gm help                      Show this message
+`;
+  process.stdout.write(text);
+}
+
+function resolveShell(args) {
+  let shell = args.find((arg) => !arg.startsWith('-'));
+  if (!shell) {
+    const envShell = process.env.SHELL || '';
+    shell = path.basename(envShell) || 'bash';
+  }
+  shell = shell.toLowerCase();
+  if (shell.endsWith('zsh')) return 'zsh';
+  if (shell.endsWith('fish')) return 'fish';
+  return 'bash';
+}
+
+function promptSnippet(shell) {
+  const promptDir = path.join(ROOT, 'share', 'gm');
+  if (shell === 'fish') {
+    return `# >>> gm initialize >>>\nif not set -q GM_ROOT\n    set -gx GM_ROOT "${ROOT}"\nend\nif test -f "$GM_ROOT/share/gm/prompt.fish"\n    source "$GM_ROOT/share/gm/prompt.fish"\nend\n# <<< gm initialize <<<`;
+  }
+  return `# >>> gm initialize >>>\nif [ -f "${promptDir}/prompt.sh" ]; then\n  GM_ROOT="\${GM_ROOT:-${ROOT}}"\n  . "${promptDir}/prompt.sh"\nfi\n# <<< gm initialize <<<`;
+}
+
+function loadPackages() {
+  const fromEnv = (process.env.GM_CONFIG && process.env.GM_CONFIG.trim()) || '';
+  const candidates = [];
+  if (fromEnv) {
+    candidates.push(fromEnv);
+  }
+  candidates.push(DEFAULT_CONFIG);
+  candidates.push(FALLBACK_CONFIG);
+  for (const candidate of candidates) {
+    try {
+      if (!fs.existsSync(candidate)) {
+        continue;
+      }
+      const raw = fs.readFileSync(candidate, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return normalizePackageList(parsed);
+      }
+    } catch (error) {
+      // ignore and continue
+    }
+  }
+  return [];
+}
+
+function resolvePackagesConfigPath() {
+  const fromEnv = (process.env.GM_CONFIG && process.env.GM_CONFIG.trim()) || '';
+  if (fromEnv) {
+    return fromEnv;
+  }
+  return DEFAULT_CONFIG;
+}
+
+function readPackagesFile(filePath) {
+  const raw = fs.readFileSync(filePath, 'utf8');
+  const parsed = JSON.parse(raw);
+  if (!Array.isArray(parsed)) {
+    throw new Error('packages file must contain a JSON array');
+  }
+  return normalizePackageList(parsed);
+}
+
+function loadPackagesForEditing() {
+  const configPath = resolvePackagesConfigPath();
+  if (fs.existsSync(configPath)) {
+    try {
+      const packages = readPackagesFile(configPath);
+      return { packages, configPath };
+    } catch (error) {
+      console.error(`gm: failed to read ${configPath}: ${error.message}`);
+      process.exitCode = 1;
+      return null;
+    }
+  }
+  return { packages: [...loadPackages()], configPath };
+}
+
+function writePackagesFile(configPath, packages) {
+  const sanitized = normalizePackageList(packages);
+  const dir = path.dirname(configPath);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(configPath, `${JSON.stringify(sanitized, null, 2)}\n`, 'utf8');
+}
+
+function runNodeScript(scriptPath, args = [], { quiet = false } = {}) {
+  const env = { ...process.env, GM_CACHE: getCachePath() };
+  const stdio = quiet ? ['ignore', 'ignore', 'inherit'] : 'inherit';
+  const result = spawnSync(process.execPath, [scriptPath, ...args], {
+    env,
+    stdio
+  });
+  return result;
+}
+
+function runNodeCapture(scriptPath, args = []) {
+  const env = { ...process.env, GM_CACHE: getCachePath() };
+  const result = spawnSync(process.execPath, [scriptPath, ...args], {
+    env,
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  return result;
+}
+
+function getCachePath() {
+  return process.env.GM_CACHE && process.env.GM_CACHE.trim()
+    ? process.env.GM_CACHE.trim()
+    : DEFAULT_CACHE;
+}
+
+function getTtlSeconds() {
+  const raw = process.env.GM_TTL_SECONDS;
+  const parsed = raw ? Number.parseInt(raw, 10) : 21600;
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return parsed;
+  }
+  return 0;
+}
+
+function cacheGeneratedAt(cachePath) {
+  try {
+    const raw = fs.readFileSync(cachePath, 'utf8');
+    const data = JSON.parse(raw);
+    if (data && typeof data.generatedAt === 'string') {
+      const ts = Date.parse(data.generatedAt);
+      if (!Number.isNaN(ts)) {
+        return Math.floor(ts / 1000);
+      }
+    }
+  } catch (error) {
+    return null;
+  }
+  return null;
+}
+
+function ensureStatus({ force = false } = {}) {
+  const cachePath = getCachePath();
+  if (force) {
+    runNodeScript(CHECK_SCRIPT, [], { quiet: true });
+    return;
+  }
+  if (!fs.existsSync(cachePath)) {
+    runNodeScript(CHECK_SCRIPT, [], { quiet: true });
+    return;
+  }
+  const ttl = getTtlSeconds();
+  if (ttl <= 0) {
+    runNodeScript(CHECK_SCRIPT, [], { quiet: true });
+    return;
+  }
+  const generated = cacheGeneratedAt(cachePath);
+  if (!generated) {
+    runNodeScript(CHECK_SCRIPT, [], { quiet: true });
+    return;
+  }
+  const now = Math.floor(Date.now() / 1000);
+  if (now - generated >= ttl) {
+    runNodeScript(CHECK_SCRIPT, [], { quiet: true });
+  }
+}
+
+function promptTick(args) {
+  const quiet = args.includes('--quiet');
+  const force = args.includes('--force');
+  ensureStatus({ force });
+  const renderArgs = [getCachePath()];
+  if (quiet) {
+    renderArgs.push('--quiet-when-none');
+  }
+  if (args.includes('--verbose')) {
+    renderArgs.push('--verbose');
+  }
+  const result = runNodeCapture(RENDER_SCRIPT, renderArgs);
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0 && result.stderr) {
+    process.stderr.write(result.stderr);
+    process.exitCode = result.status;
+    return;
+  }
+  if (result.stdout) {
+    process.stdout.write(result.stdout);
+  }
+}
+
+function gmCheck() {
+  const result = runNodeScript(CHECK_SCRIPT);
+  if (result.error) {
+    throw result.error;
+  }
+  process.exitCode = result.status;
+}
+
+function gmRender(args) {
+  const result = runNodeScript(RENDER_SCRIPT, args);
+  if (result.error) {
+    throw result.error;
+  }
+  process.exitCode = result.status;
+}
+
+function gmUpdate() {
+  const packages = loadPackages();
+  if (!packages.length) {
+    console.error('gm: no packages configured.');
+    process.exitCode = 1;
+    return;
+  }
+  const args = ['install', '-g', ...packages.map((pkg) => (pkg.includes('@') ? pkg : `${pkg}@latest`))];
+  const result = spawnSync('npm', args, { stdio: 'inherit' });
+  if (result.error) {
+    throw result.error;
+  }
+  process.exitCode = result.status;
+}
+
+function gmPackagesAdd(rawNames) {
+  if (!rawNames.length) {
+    console.error('gm: packages add requires at least one package name.');
+    process.exitCode = 1;
+    return;
+  }
+  const parsedNames = [];
+  const seen = new Set();
+  for (const raw of rawNames) {
+    const name = typeof raw === 'string' ? raw.trim() : '';
+    if (!name) {
+      console.error('gm: package name cannot be empty.');
+      process.exitCode = 1;
+      return;
+    }
+    if (seen.has(name)) {
+      continue;
+    }
+    seen.add(name);
+    parsedNames.push(name);
+  }
+  const result = loadPackagesForEditing();
+  if (!result) {
+    return;
+  }
+  const { packages, configPath } = result;
+  const existing = new Set(packages);
+  const added = [];
+  for (const name of parsedNames) {
+    if (existing.has(name)) {
+      continue;
+    }
+    packages.push(name);
+    existing.add(name);
+    added.push(name);
+  }
+  if (!added.length) {
+    console.log('gm: nothing to add.');
+    return;
+  }
+  try {
+    writePackagesFile(configPath, packages);
+    console.log(`gm: added ${added.join(', ')} (${configPath})`);
+  } catch (error) {
+    console.error(`gm: failed to write ${configPath}: ${error.message}`);
+    process.exitCode = 1;
+  }
+}
+
+function gmPackagesRemove(rawNames) {
+  if (!rawNames.length) {
+    console.error('gm: packages remove requires at least one package name.');
+    process.exitCode = 1;
+    return;
+  }
+  const parsedNames = [];
+  const target = new Set();
+  for (const raw of rawNames) {
+    const name = typeof raw === 'string' ? raw.trim() : '';
+    if (!name) {
+      console.error('gm: package name cannot be empty.');
+      process.exitCode = 1;
+      return;
+    }
+    if (target.has(name)) {
+      continue;
+    }
+    target.add(name);
+    parsedNames.push(name);
+  }
+  const result = loadPackagesForEditing();
+  if (!result) {
+    return;
+  }
+  const { packages, configPath } = result;
+  const remaining = [];
+  const removed = [];
+  for (const pkg of packages) {
+    if (target.has(pkg)) {
+      removed.push(pkg);
+      continue;
+    }
+    remaining.push(pkg);
+  }
+  if (!removed.length) {
+    console.log('gm: nothing to remove.');
+    return;
+  }
+  try {
+    writePackagesFile(configPath, remaining);
+    console.log(`gm: removed ${removed.join(', ')} (${configPath})`);
+  } catch (error) {
+    console.error(`gm: failed to write ${configPath}: ${error.message}`);
+    process.exitCode = 1;
+  }
+}
+
+function gmPackages(args) {
+  if (!args.length) {
+    const packages = loadPackages();
+    packages.forEach((pkg) => process.stdout.write(`${pkg}\n`));
+    return;
+  }
+  const sub = args[0];
+  if (sub === 'add') {
+    gmPackagesAdd(args.slice(1));
+    return;
+  }
+  if (sub === 'remove') {
+    gmPackagesRemove(args.slice(1));
+    return;
+  }
+  console.error(`gm: unsupported packages subcommand "${sub || ''}".`);
+  process.exitCode = 1;
+}
+
+function main() {
+  const args = parseArgs(process.argv);
+  const command = args[0];
+
+  if (!command || command === 'help' || command === '--help' || command === '-h') {
+    usage();
+    return;
+  }
+
+  if (command === 'prompt') {
+    const sub = args[1];
+    if (sub === 'init') {
+      const shell = resolveShell(args.slice(2));
+      process.stdout.write(`${promptSnippet(shell)}\n`);
+      return;
+    }
+    if (sub === 'tick') {
+      promptTick(args.slice(2));
+      return;
+    }
+    console.error(`gm: unsupported prompt subcommand "${sub || ''}".`);
+    process.exitCode = 1;
+    return;
+  }
+
+  if (command === 'check') {
+    gmCheck();
+    return;
+  }
+
+  if (command === 'render') {
+    gmRender(args.slice(1));
+    return;
+  }
+
+  if (command === 'update') {
+    gmUpdate();
+    return;
+  }
+
+  if (command === 'packages') {
+    gmPackages(args.slice(1));
+    return;
+  }
+
+  console.error(`gm: unknown command "${command}".`);
+  process.exitCode = 1;
+}
+
+main();

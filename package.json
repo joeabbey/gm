@@ -1,0 +1,13 @@
+{
+  "name": "gm",
+  "version": "0.1.0",
+  "description": "CLI helper that keeps AI-related npm globals fresh and surfaces updates in your shell prompt.",
+  "license": "MIT",
+  "bin": {
+    "gm": "bin/gm"
+  },
+  "scripts": {
+    "check": "node scripts/check-updates.js",
+    "render": "node scripts/render-message.js"
+  }
+}
