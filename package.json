@@ -9,5 +9,8 @@
   "scripts": {
     "check": "node scripts/check-updates.js",
     "render": "node scripts/render-message.js"
+  },
+  "dependencies": {
+    "blessed": "^0.1.81"
   }
 }

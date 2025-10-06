@@ -30,10 +30,41 @@ The scripts only rely on Node.js and work across macOS and Linux.
 
 - `gm status` — friendly status panel; add `--refresh` to force a fresh check or `--json` for automation.
 - `gm update` — install the latest version of every tracked package (uses `claude update` when the native CLI is present).
+- `gm usage` — interactive TUI for monitoring AI usage (merges data from `ccusage` and `ccusage-codex`). See [AI Usage Monitoring](#ai-usage-monitoring) below.
 - `gm packages add <name>` / `gm packages remove <name>` — adjust the tracked list without editing JSON; append `--` spaced names for multiple packages.
 - `gm packages list` — print the current list; equivalent to `gm packages`.
 - `gm doctor` — sanity-check Node/npm availability, cache/config paths, and other prerequisites.
 - `gm` — with no arguments, this is shorthand for `gm status`.
+
+## AI Usage Monitoring
+
+`gm usage` provides a beautiful terminal UI for watching your AI usage across Claude and OpenAI Codex:
+
+```bash
+# Watch with default 60s refresh
+gm usage
+
+# Custom refresh interval and date filter
+gm usage --interval 30 --since 20251002
+```
+
+**Features:**
+- 📊 Merged, interlaced view of daily usage from both `ccusage` and `ccusage-codex`
+- 🎨 Color-coded by source (cyan for Claude, magenta for Codex)
+- 📈 Detailed token breakdown: Input, Output, Cache Reads, Cache Writes
+- 💰 Real-time cost tracking
+- 🔄 Auto-refreshing at your chosen interval
+- ⌨️  Keyboard controls: `q`/`ESC` to quit, arrow keys/`j`/`k` to scroll
+
+**Options:**
+- `--interval <seconds>` — Refresh interval (default: 60)
+- `--since <date>` — Filter usage since date (YYYYMMDD format, e.g., 20251002)
+
+**Screenshot:**
+
+![gm usage TUI](./docs/usage-screenshot.png)
+
+> The TUI displays an interlaced table showing daily usage for both services, making it easy to track your AI spending at a glance instead of managing multiple terminal tabs with `watch` commands.
 
 ## Configuration knobs
 

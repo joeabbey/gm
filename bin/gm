@@ -15,6 +15,7 @@ const {
 const { runDoctor } = require('../lib/doctor');
 const { readStatus, summarizeStatus } = require('../lib/status');
 const { CLAUDE_PACKAGE, probeClaudeBinary } = require('../lib/claude');
+const { runUsageWatch } = require('../lib/usage-watch');
 const { version } = require('../package.json');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -37,6 +38,11 @@ Core workflow:
   gm status [options]          Human-friendly status report (default command)
   gm update                    Install/upgrade tracked npm globals
   gm packages [list]           Print the tracked package list
+
+AI Usage Monitoring:
+  gm usage [options]           Interactive TUI for watching AI usage (ccusage + ccusage-codex)
+    --interval <seconds>       Refresh interval (default: 60)
+    --since <date>             Filter usage since date (YYYYMMDD format)
 
 Prompt integration:
   gm prompt init [shell]       Print shell snippet to enable prompt integration (bash|zsh|fish)
@@ -704,6 +710,29 @@ function main() {
 
   if (command === 'doctor') {
     gmDoctor();
+    return;
+  }
+
+  if (command === 'usage') {
+    const options = {};
+    for (let i = 1; i < args.length; i++) {
+      if (args[i] === '--interval' && args[i + 1]) {
+        options.interval = parseInt(args[i + 1], 10);
+        i++;
+      } else if (args[i] === '--since' && args[i + 1]) {
+        options.since = args[i + 1];
+        i++;
+      } else if (args[i] === '--help' || args[i] === '-h') {
+        console.log('Usage: gm usage [options]');
+        console.log('  --interval <seconds>  Refresh interval (default: 60)');
+        console.log('  --since <date>        Filter usage since date (YYYYMMDD format)');
+        console.log('');
+        console.log('Interactive TUI for monitoring AI usage from ccusage and ccusage-codex.');
+        console.log('Press q or ESC to quit, use arrow keys or j/k to scroll.');
+        return;
+      }
+    }
+    runUsageWatch(options);
     return;
   }
 
