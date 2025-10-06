@@ -189,6 +189,17 @@ function promptTick(args) {
   }
 }
 
+function promptComplete(args) {
+  const target = args[0];
+  if (target === 'update') {
+    const updates = listUpdateCandidates();
+    updates.forEach((name) => process.stdout.write(`${name}\n`));
+    return;
+  }
+  console.error(`gm: unsupported prompt completion "${target || ''}".`);
+  process.exitCode = 1;
+}
+
 function gmStatus(args) {
   const wantsHelp = args.some((arg) => arg === '--help' || arg === '-h');
   if (wantsHelp) {
@@ -324,18 +335,78 @@ function gmRender(args) {
   process.exitCode = result.status;
 }
 
-function gmUpdate() {
+function listUpdateCandidates() {
+  const status = readStatus(getCachePath());
+  if (!status) {
+    return [];
+  }
+  const summary = summarizeStatus(status);
+  if (!summary || !Array.isArray(summary.updates)) {
+    return [];
+  }
+  const tracked = new Set(loadPackages());
+  const seen = new Set();
+  const result = [];
+  summary.updates.forEach((pkg) => {
+    const name = pkg && typeof pkg.name === 'string' ? pkg.name : null;
+    if (!name || seen.has(name) || !tracked.has(name)) {
+      return;
+    }
+    seen.add(name);
+    result.push(name);
+  });
+  return result;
+}
+
+function gmUpdate(args = []) {
   const packages = loadPackages();
   if (!packages.length) {
     console.error('gm: no packages configured.');
     process.exitCode = 1;
     return;
   }
+
+  const wantsHelp = args.some((arg) => arg === '--help' || arg === '-h');
+  if (wantsHelp) {
+    console.log('Usage: gm update [package ...]');
+    console.log('  With no arguments, all tracked packages are updated.');
+    console.log('  When packages are provided, only those will be updated.');
+    return;
+  }
+
+  const requested = args.filter((arg) => typeof arg === 'string' && arg.trim()).map((arg) => arg.trim());
+  const selected = [];
+  const missing = [];
+  if (requested.length) {
+    const known = new Set(packages);
+    requested.forEach((name) => {
+      if (!known.has(name)) {
+        missing.push(name);
+        return;
+      }
+      if (!selected.includes(name)) {
+        selected.push(name);
+      }
+    });
+    if (missing.length) {
+      console.error(`gm: not tracked: ${missing.join(', ')}`);
+      process.exitCode = 1;
+      return;
+    }
+  } else {
+    selected.push(...packages);
+  }
+
+  if (!selected.length) {
+    console.log('gm: no matching packages to update.');
+    return;
+  }
+
   const claudeProbe = probeClaudeBinary();
   const npmPackages = [];
   let invokedClaude = false;
 
-  packages.forEach((pkg) => {
+  selected.forEach((pkg) => {
     if (pkg === CLAUDE_PACKAGE && claudeProbe && claudeProbe.found) {
       invokedClaude = true;
     } else {
@@ -345,8 +416,9 @@ function gmUpdate() {
 
   let npmStatus = 0;
   if (npmPackages.length) {
-    const args = ['install', '-g', ...npmPackages];
-    const result = spawnSync('npm', args, { stdio: 'inherit' });
+    console.log(`Updating npm packages: ${selected.filter(pkg => pkg !== CLAUDE_PACKAGE).join(', ')}`);
+    const npmArgs = ['install', '-g', ...npmPackages];
+    const result = spawnSync('npm', npmArgs, { stdio: 'inherit' });
     if (result.error) {
       throw result.error;
     }
@@ -358,6 +430,7 @@ function gmUpdate() {
   }
 
   if (invokedClaude) {
+    console.log('Updating claude via claude CLI');
     const claudeResult = spawnSync('claude', ['update'], { stdio: 'inherit' });
     if (claudeResult.error) {
       throw claudeResult.error;
@@ -368,7 +441,20 @@ function gmUpdate() {
     }
   }
 
-  process.exitCode = npmStatus;
+  if (!npmPackages.length && !invokedClaude) {
+    console.log('gm: nothing to update.');
+  }
+
+  const refreshResult = runNodeScript(CHECK_SCRIPT, [], { quiet: true });
+  let refreshStatus = 0;
+  if (refreshResult) {
+    if (refreshResult.error) {
+      throw refreshResult.error;
+    }
+    refreshStatus = refreshResult.status || 0;
+  }
+
+  process.exitCode = npmStatus || refreshStatus;
 }
 
 function gmPackagesAdd(rawNames) {
@@ -582,6 +668,10 @@ function main() {
       promptTick(args.slice(2));
       return;
     }
+    if (sub === 'complete') {
+      promptComplete(args.slice(2));
+      return;
+    }
     console.error(`gm: unsupported prompt subcommand "${sub || ''}".`);
     process.exitCode = 1;
     return;
@@ -603,7 +693,7 @@ function main() {
   }
 
   if (command === 'update') {
-    gmUpdate();
+    gmUpdate(args.slice(1));
     return;
   }
 

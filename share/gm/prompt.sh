@@ -33,6 +33,24 @@ _gm_tick_quiet() {
   fi
 }
 
+_gm_prompt_prefix() {
+  if [ ! -f "$GM_CACHE" ]; then
+    return
+  fi
+  local cache_status
+  cache_status=$(cat "$GM_CACHE" 2>/dev/null)
+  if [ -z "$cache_status" ]; then
+    return
+  fi
+
+  # Check if there are any updates available
+  if echo "$cache_status" | grep -q '"status":"update_available"'; then
+    printf '⬆️ '
+  else
+    printf '🤖 '
+  fi
+}
+
 _gm_precmd() {
   local _gm_message
   _gm_message="$(_gm_tick_quiet)"
@@ -53,6 +71,10 @@ _gm_install_prompt_hook() {
         precmd_functions+=( _gm_precmd )
       fi
     fi
+    # Add prompt prefix to PS1
+    if [[ ! "$PS1" =~ "_gm_prompt_prefix" ]]; then
+      PS1='$(_gm_prompt_prefix)'"$PS1"
+    fi
   elif [ -n "${BASH_VERSION:-}" ]; then
     case ";${PROMPT_COMMAND:-};" in
       *"_gm_precmd"*) ;;
@@ -65,6 +87,10 @@ _gm_install_prompt_hook() {
         export PROMPT_COMMAND
         ;;
     esac
+    # Add prompt prefix to PS1
+    if [[ ! "$PS1" =~ "_gm_prompt_prefix" ]]; then
+      PS1='$(_gm_prompt_prefix)'"$PS1"
+    fi
   fi
 }
 
@@ -83,9 +109,96 @@ gm_refresh_status() {
 alias gm-update='GM_CACHE="$GM_CACHE" GM_CONFIG="$GM_CONFIG" GM_TTL_SECONDS="$GM_TTL_SECONDS" "$GM_BIN" update'
 alias gm-refresh='gm_refresh_status --force'
 
+_gm_update_candidates() {
+  if [ ! -x "$GM_BIN" ]; then
+    return
+  fi
+  GM_CACHE="$GM_CACHE" GM_CONFIG="$GM_CONFIG" GM_TTL_SECONDS="$GM_TTL_SECONDS" "$GM_BIN" prompt complete update 2>/dev/null
+}
+
+if [ -n "${BASH_VERSION:-}" ]; then
+  _gm_completion() {
+    local cur
+    COMPREPLY=()
+    cur="${COMP_WORDS[COMP_CWORD]}"
+
+    if [ $COMP_CWORD -eq 1 ]; then
+      local commands
+      commands='check doctor packages prompt render status update version help'
+      COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
+      return 0
+    fi
+
+    if [ "${COMP_WORDS[1]}" = 'update' ]; then
+      local updates
+      updates="$(_gm_update_candidates)"
+      if [ -n "$updates" ]; then
+        local used=$'\n'
+        local word
+        for word in "${COMP_WORDS[@]:2}"; do
+          used+="${word}"$'\n'
+        done
+        local filtered=()
+        local candidate
+        while IFS= read -r candidate; do
+          [ -n "$candidate" ] || continue
+          case $used in
+            *$'\n'"$candidate"$'\n'* ) continue ;;
+          esac
+          filtered+=("$candidate")
+        done <<<"$updates"
+        if [ ${#filtered[@]} -gt 0 ]; then
+          COMPREPLY=( $(compgen -W "${filtered[*]}" -- "$cur") )
+        fi
+      fi
+      return 0
+    fi
+    return 1
+  }
+
+  complete -F _gm_completion gm
+  complete -F _gm_completion gm-update
+fi
+
+if [ -n "${ZSH_VERSION:-}" ]; then
+  _gm_zsh_completion() {
+    local -a commands updates filtered
+    commands=(check doctor packages prompt render status update version help)
+
+    if (( CURRENT == 2 )); then
+      compadd -- "${commands[@]}"
+      return
+    fi
+
+    if [[ ${words[2]} == update ]]; then
+      updates=(${(f)$(_gm_update_candidates)})
+      if (( ${#updates[@]} )); then
+        local word
+        local -A seen
+        for word in "${words[@]:3}"; do
+          [[ -n $word ]] && seen[$word]=1
+        done
+        for word in "${updates[@]}"; do
+          [[ -n $word && -z ${seen[$word]-} ]] && filtered+=("$word")
+        done
+        (( ${#filtered[@]} )) && compadd -- "${filtered[@]}"
+      fi
+      return
+    fi
+    return 1
+  }
+
+  compdef _gm_zsh_completion gm
+  compdef _gm_zsh_completion gm-update
+fi
+
 _gm_install_prompt_hook
 
 # Initial refresh so first prompt reflects current status
-_gm_tick_quiet --force >/dev/null 2>&1
+_gm_initial_message="$(_gm_tick_quiet --force 2>/dev/null)"
+if [ -n "$_gm_initial_message" ]; then
+  printf '%s\n' "$_gm_initial_message"
+fi
+unset _gm_initial_message
 
 GM_PROMPT_LOADED=1
