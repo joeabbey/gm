@@ -40,8 +40,6 @@ The scripts only rely on Node.js and work across macOS and Linux.
 
 `gm usage` provides a beautiful terminal UI for watching your AI usage across Claude and OpenAI Codex:
 
-<img width="1294" height="594" alt="image" src="https://github.com/user-attachments/assets/2a635d8e-0254-40cb-8b09-90ffcbabd0bf" />
-
 ```bash
 # Watch with default 60s refresh
 gm usage
@@ -63,8 +61,7 @@ gm usage --interval 30 --since 20251002
 - `--since <date>` — Filter usage since date (YYYYMMDD format, e.g., 20251002)
 
 **Screenshot:**
-
-![gm usage TUI](./docs/usage-screenshot.png)
+<img width="1294" height="594" alt="image" src="https://github.com/user-attachments/assets/2a635d8e-0254-40cb-8b09-90ffcbabd0bf" />
 
 > The TUI displays an interlaced table showing daily usage for both services, making it easy to track your AI spending at a glance instead of managing multiple terminal tabs with `watch` commands.
 
