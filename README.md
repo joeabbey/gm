@@ -40,6 +40,8 @@ The scripts only rely on Node.js and work across macOS and Linux.
 
 `gm usage` provides a beautiful terminal UI for watching your AI usage across Claude and OpenAI Codex:
 
+<img width="1294" height="594" alt="image" src="https://github.com/user-attachments/assets/2a635d8e-0254-40cb-8b09-90ffcbabd0bf" />
+
 ```bash
 # Watch with default 60s refresh
 gm usage
