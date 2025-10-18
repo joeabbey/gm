@@ -15,7 +15,6 @@ const {
 const { runDoctor } = require('../lib/doctor');
 const { readStatus, summarizeStatus } = require('../lib/status');
 const { CLAUDE_PACKAGE, probeClaudeBinary } = require('../lib/claude');
-const { runUsageWatch } = require('../lib/usage-watch');
 const { version } = require('../package.json');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -732,6 +731,8 @@ function main() {
         return;
       }
     }
+    // Lazy-load usage-watch to avoid loading blessed dependency unless needed
+    const { runUsageWatch } = require('../lib/usage-watch');
     runUsageWatch(options);
     return;
   }

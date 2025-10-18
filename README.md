@@ -122,8 +122,8 @@ These extras are optional; the prompt hook runs fine with nothing more than Node
 
 ## Repository housekeeping
 
-- The project is intentionally dependency-free; `npm install -g .` (or `npm link`) is enough to expose the `gm` command.
-- `.gitignore` ignores `node_modules/`, though none are needed by default.
+- The project has minimal dependencies (`blessed` for the TUI); `npm install -g .` (or `npm link`) will install them automatically and expose the `gm` command.
+- `.gitignore` ignores `node_modules/`.
 - Use `npm run check` to manually regenerate the cache from the repo root.
 
 Happy shipping!
